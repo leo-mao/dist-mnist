@@ -13,8 +13,8 @@ with tf.device('/gpu:0'):
 with tf.device('/gpu:1'):
 
     mutwb=w*b
-    init=tf.initialize_all_variables()
 
+init=tf.initialize_all_variables()
 
 with tf.Session() as sess:
 

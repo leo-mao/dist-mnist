@@ -1,6 +1,6 @@
-### Mnist 手写字体识别任务
+## 分布式部署TensorflowMnist手写字体识别任务
 
-## How to run
+### How to run
 `git clone git@github.com:leo-mao/dist-mnist.git`
 ```
 git clone git@github.com:leo-mao/dist-mnist.git

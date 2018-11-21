@@ -1,8 +1,10 @@
 import tensorflow as tf
 import math
 import tempfile
+import sys
 from tensorflow.contrib.learn.python.learn.datasets.mnist import read_data_sets
 
+# from tensorflow.python.training.training_util import get_global_step
 # import os
 # os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
@@ -10,10 +12,10 @@ flags = tf.app.flags
 
 flags.DEFINE_string('data_dir', None, 'Directory for mnist data')
 flags.DEFINE_integer('hidden_units', 100, '')
-flags.DEFINE_integer('train_steps', 10000, '')
+flags.DEFINE_integer('train_steps', 4000, '')
 flags.DEFINE_integer('batch_size', 100, '')
-flags.DEFINE_float('learning_rate', 0.0001, '')
-
+flags.DEFINE_float('learning_rate', 1e-04, '')
+flags.DEFINE_bool('is_sync', False, '')
 
 # workers' port numbers start from 9900
 # while ps's port numbers start from 9910
@@ -32,12 +34,11 @@ def model_from_zhihu(images, labels):
     nn = tf.layers.dense(images, 500, activation=tf.nn.relu)
     nn = tf.layers.dense(nn, 500, activation=tf.nn.relu)
     nn = tf.layers.dense(nn, 10, activation=None)
-    nn = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits=nn, labels=labels))
-    return nn
+    cross_entropy = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits=nn, labels=labels))
+    return cross_entropy, nn
 
 
-def model_from_book_example(input, labels):
-
+def model_from_book_example(inputs, labels):
     hid_w = tf.Variable(tf.truncated_normal([IMAGE_PIXELS * IMAGE_PIXELS, FLAGS.hidden_units],
                                             stddev=1.0 / IMAGE_PIXELS), name='hid_w')
     hid_b = tf.Variable(tf.zeros([FLAGS.hidden_units]), name='hid_b')
@@ -46,16 +47,16 @@ def model_from_book_example(input, labels):
                                            stddev=1.0 / math.sqrt(FLAGS.hidden_units)), name='sm_w')
     sm_b = tf.Variable(tf.zeros([10]), name='sm_b')
 
-    activation = tf.nn.xw_plus_b(input, hid_w, hid_b)
+    activation = tf.nn.xw_plus_b(inputs, hid_w, hid_b)
     hid = tf.nn.relu(activation)
 
     y = tf.nn.softmax(tf.nn.xw_plus_b(hid, sm_w, sm_b))
     cross_entropy = -tf.reduce_mean(labels * tf.log(tf.clip_by_value(y, 1e-10, 1.0)))
-    return cross_entropy
+
+    return cross_entropy, y
 
 
-def main(unused_argv):
-
+def main(unused_args):
     if FLAGS.job_name is not None and len(FLAGS.job_name) > 0:
         print('job name : {}'.format(FLAGS.job_name))
     else:
@@ -71,7 +72,7 @@ def main(unused_argv):
     worker_hosts = FLAGS.worker_hosts.split(',')
     num_workers = len(worker_hosts)
     ps_hosts = FLAGS.ps_hosts.split(',')
-
+    is_chief = (FLAGS.task_index == 0)
     cluster = tf.train.ClusterSpec({
         "worker": worker_hosts,
         "ps": ps_hosts
@@ -81,39 +82,62 @@ def main(unused_argv):
 
     if FLAGS.job_name == 'ps':
         server.join()
-
+        sys.exit('0')
     if FLAGS.job_name == 'worker':
 
         # Between-graph replication
         with tf.device(tf.train.replica_device_setter(worker_device='/job:worker/task:{}'.format(FLAGS.task_index),
                                                       cluster=cluster)):
 
-            global_step = tf.Variable(0, name='global_step', trainable=False)
-            input = tf.placeholder(tf.float32, [None, IMAGE_PIXELS * IMAGE_PIXELS])
+            # 1.Define the model
+            inputs = tf.placeholder(tf.float32, [None, IMAGE_PIXELS * IMAGE_PIXELS])
             labels = tf.placeholder(tf.float32, [None, 10])
+            input_test = mnist.test.images
+            labels_test = mnist.test.labels
 
             # Model from Zhihu
-            # loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits=logits, labels=labels))
+            loss, y_predict = model_from_zhihu(images=inputs, labels=labels)
+            # global_step = get_global_step()
 
             # Model from book
-            loss = model_from_book_example(input, labels)
+            # loss, y_predict = model_from_book_example(input, labels)
+            global_step = tf.Variable(0, name='global_step', trainable=False)
 
-            hooks =[tf.train.StopAtStepHook(last_step=4000)]
-            opt = tf.train.AdamOptimizer(FLAGS.learning_rate)
-            train_opt = opt.minimize(loss, global_step=global_step, aggregation_method=tf.AggregationMethod.ADD_N)
+            # 2. Define the hook for initialization and queues
+            hooks = [tf.train.StopAtStepHook(last_step=FLAGS.train_steps)]
 
-
+            # 3. Train and test accuracy
+            learning_rate = tf.train.exponential_decay(FLAGS.learning_rate, global_step, 50, 0.96, staircase=True)
+            optimizer = tf.train.AdamOptimizer(learning_rate)
+            correct_prediction = tf.equal(tf.argmax(y_predict, 1), tf.argmax(labels, 1))
+            accuracy_op = tf.reduce_mean(tf.cast(correct_prediction, tf.float32))
             train_dir = tempfile.mkdtemp()
 
-            with tf.train.MonitoredTrainingSession(master=server.target, is_chief=(FLAGS.task_index == 0),
+            # sync mode is currently unavailable, due to absence of the function get_or_create_global_step/
+            #  get_global step
+            # if FLAGS.is_sync:
+            #     if is_chief:
+            #         optimizer = tf.train.SyncReplicasOptimizer(optimizer, replicas_to_aggregate=num_workers,
+            #                                              total_num_replicas=num_workers, name="sync_replicas")
+            #         hooks.append(optimizer.make_session_run_hook(is_chief))
+
+            train_opt = optimizer.minimize(loss, global_step=global_step, aggregation_method=tf.AggregationMethod.ADD_N)
+
+            write = tf.summary.FileWriter('./graphs/dist-mnist.summary', tf.get_default_graph())
+
+            with tf.train.MonitoredTrainingSession(master=server.target, is_chief=is_chief,
                                                    checkpoint_dir=train_dir, hooks=hooks) as sess:
                 while not sess.should_stop():
-                    input_batch, label_batch = mnist.train.next_batch(32)
+                    input_batch, label_batch = mnist.train.next_batch(FLAGS.batch_size)
                     _, ls, step = sess.run([train_opt, loss, global_step],
-                                           feed_dict={input: input_batch, labels: label_batch})
+                                           feed_dict={inputs: input_batch, labels: label_batch})
 
                     if step % 100 == 0:
-                        print("Train step {}, loss: {}".format(step, ls))
+                        print('Train step {}, loss: {}'.format(step, ls))
+                        if step < FLAGS.train_steps:
+                            print('Accuracy: {}'.format(accuracy_op.eval({inputs: input_test,
+                                                                          labels: labels_test}, session=sess)))
+                write.close()
 
 
 if __name__ == '__main__':

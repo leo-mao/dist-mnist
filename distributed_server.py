@@ -122,13 +122,5 @@ def main(argv=None):
             step += 1
 
 
-# def _DistributedInitializerHook(session_run_hook.SessionRunHook, variables_collection):
-#     def __init__(self, initializer, variables_collection):
-#         self._initializer = initializer
-#         self._variables_collection = variables_collection
-#     def begin(self):
-#         pass
-
-
 if __name__ == "__main__":
     tf.app.run()

@@ -2,6 +2,7 @@
 import tensorflow as tf
 import time
 import mnist_inference
+import tempfile
 from tensorflow.contrib.learn.python.learn.datasets.mnist import read_data_sets
 
 # import os
@@ -19,7 +20,7 @@ flags.DEFINE_float('moving_average_decay', 0.99, '')
 flags.DEFINE_float('regularaztion_rate', 1e-4, '')
 flags.DEFINE_bool('is_sync', False, '')
 # flags.DEFINE_string('data_path', True, '')
-flags.DEFINE_string('model_save_path', './checkpoints', '')
+flags.DEFINE_string('model_save_path', None, '')
 
 # workers' port numbers start from 9900
 # while ps's port numbers start from 9910
@@ -77,7 +78,7 @@ def main(argv=None):
             server.join()
     is_chief = (FLAGS.task_index == 0)
     mnist = read_data_sets('MNIST_data', one_hot=True)
-
+    train_dir = FLAGS.model_save_path if FLAGS.model_save_path is not None else tempfile.mkdtemp()
     device_setter = tf.train.replica_device_setter(
         worker_device='/job:worker/task:%d' % FLAGS.task_index, cluster=cluster)
 
@@ -87,11 +88,11 @@ def main(argv=None):
         global_step, loss, train_op, sync_replicas_hook = build_model(x, y_, n_workers, is_chief)
 
         hooks = [sync_replicas_hook, tf.train.StopAtStepHook(last_step=FLAGS.training_steps)]
-        sess_config = tf.ConfigProto(allow_soft_placement=True, log_device_placement=True)
+        sess_config = tf.ConfigProto(allow_soft_placement=True, log_device_placement=False)
 
     with tf.train.MonitoredTrainingSession(master=server.target,
                                            is_chief=is_chief,
-                                           checkpoint_dir=FLAGS.model_save_path,
+                                           checkpoint_dir=train_dir,
                                            hooks=hooks,
                                            save_checkpoint_secs=60,
                                            config=sess_config) as mon_sess:

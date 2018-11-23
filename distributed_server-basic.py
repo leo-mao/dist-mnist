@@ -3,7 +3,7 @@ import math
 import tempfile
 import sys
 from tensorflow.contrib.learn.python.learn.datasets.mnist import read_data_sets
-
+from tensorflow.python.ops import variables
 # from tensorflow.python.training.training_util import get_global_step
 # import os
 # os.environ["CUDA_VISIBLE_DEVICES"] = "0"
@@ -31,9 +31,9 @@ IMAGE_PIXELS = 28
 
 def model_from_zhihu(images, labels):
     """The model of NN from https://zhuanlan.zhihu.com/p/35083779"""
-    nn = tf.layers.dense(images, 500, activation=tf.nn.relu)
-    nn = tf.layers.dense(nn, 500, activation=tf.nn.relu)
-    nn = tf.layers.dense(nn, 10, activation=None)
+    nn = tf.layers.dense(images, 500, activation=tf.nn.relu, name='relu_1')
+    nn = tf.layers.dense(nn, 500, activation=tf.nn.relu, name='relu_2')
+    nn = tf.layers.dense(nn, 10, activation=None, name='predict')
     cross_entropy = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits=nn, labels=labels))
     return cross_entropy, nn
 
@@ -56,7 +56,28 @@ def model_from_book_example(inputs, labels):
     return cross_entropy, y
 
 
+def model_98_csdn_example(input, labels, keep_prob):
+    """Add dropout layer https://blog.csdn.net/wangsiji_buaa/article/details/80205629"""
+    W1 = variables.Variable(tf.truncated_normal([IMAGE_PIXELS * IMAGE_PIXELS], stddev=1.0))
+    b1 = variables.Variable(tf.zeros([500]) + 0.1)
+    L1 = tf.matmul(input, W1) + b1
+    L1_drop = tf.nn.dropout(L1, keep_prob=keep_prob)
+
+    W2 = variables.Variable(tf.truncated_normal([500, 300], stddev=0.1))
+    b2 = variables.Variable(tf.Zeros([300] + 0.1))
+    L2 = tf.matmul(input, L1_drop, W2) + b2
+    L2_drop = tf.nn.dropout(L2, keep_prob=keep_prob)
+
+    W3 = variables.Variable(tf.truncated_normal([300, 10], stddev=0.1))
+    b3 = variables.Variable(tf.zeros([10]) + 0.1)
+    prediction = tf.nn.softmax(tf.matmul(L2_drop, W3) + b3)
+
+    cross_entropy = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(labels=labels, logits=prediction))
+    return cross_entropy, prediction
+
+
 def main(unused_args):
+
     if FLAGS.job_name is not None and len(FLAGS.job_name) > 0:
         print('job name : {}'.format(FLAGS.job_name))
     else:
@@ -92,6 +113,7 @@ def main(unused_args):
             # 1.Define the model
             inputs = tf.placeholder(tf.float32, [None, IMAGE_PIXELS * IMAGE_PIXELS])
             labels = tf.placeholder(tf.float32, [None, 10])
+            keep_prob = tf.placeholder(tf.float32)
             input_test = mnist.test.images
             labels_test = mnist.test.labels
 
@@ -101,7 +123,8 @@ def main(unused_args):
 
             # Model from book
             # loss, y_predict = model_from_book_example(input, labels)
-            global_step = tf.Variable(0, name='global_step', trainable=False)
+            global_step = tf.contrib.framework.get_or_create_global_step()
+
 
             # 2. Define the hook for initialization and queues
             hooks = [tf.train.StopAtStepHook(last_step=FLAGS.train_steps)]
@@ -116,9 +139,9 @@ def main(unused_args):
             # sync mode is currently unavailable, due to absence of the function get_or_create_global_step/
             #  get_global step
             # if FLAGS.is_sync:
+            #     optimizer = tf.train.SyncReplicasOptimizer(optimizer, replicas_to_aggregate=num_workers,
+            #                                                total_num_replicas=num_workers, name="sync_replicas")
             #     if is_chief:
-            #         optimizer = tf.train.SyncReplicasOptimizer(optimizer, replicas_to_aggregate=num_workers,
-            #                                              total_num_replicas=num_workers, name="sync_replicas")
             #         hooks.append(optimizer.make_session_run_hook(is_chief))
 
             train_opt = optimizer.minimize(loss, global_step=global_step, aggregation_method=tf.AggregationMethod.ADD_N)

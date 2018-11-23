@@ -40,7 +40,7 @@ def build_model(x, y_, n_workers, is_chief):
     global_step = tf.train.get_or_create_global_step()
     # Accuracy
     correct_prediction = tf.equal(tf.argmax(y, 1), tf.argmax(y_, 1))
-    accuracy_op = tf.reduce_mean(tf.cast(correct_prediction, tf.float32))
+    accuracy = tf.reduce_mean(tf.cast(correct_prediction, tf.float32))
 
 
     cross_entropy = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=y, labels=tf.argmax(y_, 1))
@@ -66,8 +66,10 @@ def build_model(x, y_, n_workers, is_chief):
         variables_averages_op = variable_averages.apply(tf.trainable_variables())
         with tf.control_dependencies([variables_averages_op, train_op]):
             train_op = tf.no_op()
+    loss_summary = tf.summary.scalar('loss', loss)
+    accuracy_summary = tf.summary.scalar('accuracy', accuracy)
 
-    return global_step, loss, train_op, sync_replicas_hook, accuracy_op
+    return global_step, loss, train_op, sync_replicas_hook, accuracy
 
 
 def main(argv=None):
@@ -106,11 +108,15 @@ def main(argv=None):
         print('session started')
         step = 0
         start_time = time.time()
+        train_write = tf.summary.FileWriter('./graphs/dist-mnist.summary', tf.get_default_graph())
 
         while not mon_sess.should_stop():
+            merge = tf.summary.merge_all()
             xs, ys = mnist.train.next_batch(FLAGS.batch_size)
-            _, loss_value, global_step_value, accuracy_value = mon_sess.run(
-                [train_op, loss, global_step, accuracy], feed_dict={x: xs, y_: ys})
+            summary, _, loss_value, global_step_value, accuracy_value = mon_sess.run(
+                [merge, train_op, loss, global_step, accuracy], feed_dict={x: xs, y_: ys})
+
+            # sec_per_batch = tf.summary.scalar('speed', )
 
             if step > 0 and step % 100 == 0:
                 duration = time.time() - start_time

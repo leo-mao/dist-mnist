@@ -88,7 +88,7 @@ def main(argv=None):
         global_step, loss, train_op, sync_replicas_hook = build_model(x, y_, n_workers, is_chief)
 
         hooks = [sync_replicas_hook, tf.train.StopAtStepHook(last_step=FLAGS.training_steps)]
-        sess_config = tf.ConfigProto(allow_soft_placement=True, log_device_placement=False)
+        sess_config = tf.ConfigProto(allow_soft_placement=True, log_device_placement=True)
 
     with tf.train.MonitoredTrainingSession(master=server.target,
                                            is_chief=is_chief,
@@ -112,6 +112,8 @@ def main(argv=None):
                              "loss on training batch is %g. (%.3f sec/batch)"
                 print(format_str % (step, global_step_value, loss_value, sec_per_batch))
             step += 1
+        if is_chief:
+            mon_sess.close()
 
 
 if __name__ == "__main__":

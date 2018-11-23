@@ -88,22 +88,13 @@ def main(argv=None):
 
         hooks = [sync_replicas_hook, tf.train.StopAtStepHook(last_step=FLAGS.training_steps)]
         sess_config = tf.ConfigProto(allow_soft_placement=True, log_device_placement=True)
-    target_collection = []  # target tensor
-    if is_chief:
-        collection = tf.local_variables() + target_collection
-    else:
-        collection = tf.local_variables()
-    local_init_op = tf.variables_initializer(collection)
-    ready_for_local_init_op = tf.report_uninitialized_variables(collection)
 
-    scaffold = tf.train.Scaffold(local_init_op=local_init_op, ready_for_local_init_op=ready_for_local_init_op)
     with tf.train.MonitoredTrainingSession(master=server.target,
                                            is_chief=is_chief,
                                            checkpoint_dir=FLAGS.model_save_path,
                                            hooks=hooks,
                                            save_checkpoint_secs=60,
-                                           config=sess_config,
-                                           scaffold=scaffold) as mon_sess:
+                                           config=sess_config) as mon_sess:
         print('session started')
         step = 0
         start_time = time.time()

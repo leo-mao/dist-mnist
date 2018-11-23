@@ -38,6 +38,10 @@ def build_model(x, y_, n_workers, is_chief):
     regularizer = tf.contrib.layers.l2_regularizer(FLAGS.regularaztion_rate)
     y = mnist_inference.inference(x, regularizer)
     global_step = tf.train.get_or_create_global_step()
+    # Accuracy
+    correct_prediction = tf.equal(tf.argmax(y, 1), tf.argmax(y_, 1))
+    accuracy_op = tf.reduce_mean(tf.cast(correct_prediction, tf.float32))
+
 
     cross_entropy = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=y, labels=tf.argmax(y_, 1))
     cross_entropy_mean = tf.reduce_mean(cross_entropy)
@@ -63,7 +67,7 @@ def build_model(x, y_, n_workers, is_chief):
         with tf.control_dependencies([variables_averages_op, train_op]):
             train_op = tf.no_op()
 
-    return global_step, loss, train_op, sync_replicas_hook
+    return global_step, loss, train_op, sync_replicas_hook, accuracy_op
 
 
 def main(argv=None):
@@ -82,14 +86,17 @@ def main(argv=None):
     device_setter = tf.train.replica_device_setter(
         worker_device='/job:worker/task:%d' % FLAGS.task_index, cluster=cluster)
 
+
     with tf.device(device_setter):
+        # Design Graph
         x = tf.placeholder(tf.float32, [None, mnist_inference.INPUT_NODE], name='x-input')
         y_ = tf.placeholder(tf.float32, [None, mnist_inference.OUTPUT_NODE], name='y-input')
-        global_step, loss, train_op, sync_replicas_hook = build_model(x, y_, n_workers, is_chief)
+        global_step, loss, train_op, sync_replicas_hook, accuracy = build_model(x, y_, n_workers, is_chief)
 
         hooks = [sync_replicas_hook, tf.train.StopAtStepHook(last_step=FLAGS.training_steps)]
         sess_config = tf.ConfigProto(allow_soft_placement=True, log_device_placement=True)
 
+    # input output
     with tf.train.MonitoredTrainingSession(master=server.target,
                                            is_chief=is_chief,
                                            checkpoint_dir=train_dir,
@@ -102,18 +109,21 @@ def main(argv=None):
 
         while not mon_sess.should_stop():
             xs, ys = mnist.train.next_batch(FLAGS.batch_size)
-            _, loss_value, global_step_value = mon_sess.run(
-                [train_op, loss, global_step], feed_dict={x: xs, y_: ys})
+            _, loss_value, global_step_value, accuracy_value = mon_sess.run(
+                [train_op, loss, global_step, accuracy], feed_dict={x: xs, y_: ys})
 
             if step > 0 and step % 100 == 0:
                 duration = time.time() - start_time
                 sec_per_batch = duration / global_step_value
                 format_str = "After %d training steps (%d global steps), " + \
-                             "loss on training batch is %g. (%.3f sec/batch)"
+                             "loss on training batch is %g. (%.3f sec/batch)" + \
+                             " Accuracy on test set is %g. (%.4f )"
                 print(format_str % (step, global_step_value, loss_value, sec_per_batch))
+
+                if step < FLAGS.training_steps:
+                    print('Accuracy: {}'.format(accuracy_value))
+
             step += 1
-        if is_chief:
-            mon_sess.close()
 
 
 if __name__ == "__main__":

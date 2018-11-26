@@ -12,7 +12,7 @@ flags = tf.app.flags
 
 flags.DEFINE_string('data_dir', None, 'Directory for mnist data')
 flags.DEFINE_integer('hidden_units', 100, '')
-flags.DEFINE_integer('training_steps', 4000, '')
+flags.DEFINE_integer('training_steps', 3000, '')
 flags.DEFINE_integer('batch_size', 100, '')
 flags.DEFINE_float('learning_rate_base', 1e-04, '')
 flags.DEFINE_float('learning_rate_decay', 0.99, '')
@@ -37,39 +37,49 @@ IMAGE_PIXELS = 28
 def build_model(x, y_, n_workers, is_chief):
     regularizer = tf.contrib.layers.l2_regularizer(FLAGS.regularaztion_rate)
     y = mnist_inference.inference(x, regularizer)
+    tf.summary.histogram('layer2/y', y)
+
     global_step = tf.train.get_or_create_global_step()
     # Accuracy
     correct_prediction = tf.equal(tf.argmax(y, 1), tf.argmax(y_, 1))
+
     accuracy = tf.reduce_mean(tf.cast(correct_prediction, tf.float32))
 
+    with tf.name_scope('loss_function'):
+        cross_entropy = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=y, labels=tf.argmax(y_, 1))
+        cross_entropy_mean = tf.reduce_mean(cross_entropy)
+        loss = cross_entropy_mean + tf.add_n(tf.get_collection('losses'))
+    tf.summary.scalar('layer2/loss', loss)
 
-    cross_entropy = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=y, labels=tf.argmax(y_, 1))
-    cross_entropy_mean = tf.reduce_mean(cross_entropy)
-    loss = cross_entropy_mean + tf.add_n(tf.get_collection('losses'))
-    learning_rate = tf.train.exponential_decay(
-        FLAGS.learning_rate_base,
-        global_step,
-        60000 / FLAGS.batch_size,  # 60000???TODO mnist.train.num_examples, every batch decays some extent
-        FLAGS.learning_rate_decay)
+    with tf.name_scope('train_step'):
+        learning_rate = tf.train.exponential_decay(
+            FLAGS.learning_rate_base,
+            global_step,
+            60000 / FLAGS.batch_size,  # 60000???TODO mnist.train.num_examples, every batch decays some extent
+            FLAGS.learning_rate_decay)
 
-    # tf.train.SyncReplicasOptimizer
-    opt = tf.train.SyncReplicasOptimizer(
-        tf.train.GradientDescentOptimizer(learning_rate),
-        replicas_to_aggregate=n_workers,
-        total_num_replicas=n_workers
-    )
-    sync_replicas_hook = opt.make_session_run_hook(is_chief)
-    train_op = opt.minimize(loss, global_step=global_step)
+        # tf.train.SyncReplicasOptimizer
+        opt = tf.train.SyncReplicasOptimizer(
+            tf.train.GradientDescentOptimizer(learning_rate),
+            replicas_to_aggregate=n_workers,
+            total_num_replicas=n_workers
+        )
+        sync_replicas_hook = opt.make_session_run_hook(is_chief)
+        train_op = opt.minimize(loss, global_step=global_step)
 
-    if is_chief:
-        variable_averages = tf.train.ExponentialMovingAverage(FLAGS.moving_average_decay, global_step)
-        variables_averages_op = variable_averages.apply(tf.trainable_variables())
-        with tf.control_dependencies([variables_averages_op, train_op]):
-            train_op = tf.no_op()
-    loss_summary = tf.summary.scalar('loss', loss)
-    accuracy_summary = tf.summary.scalar('accuracy', accuracy)
+        if is_chief:
+            variable_averages = tf.train.ExponentialMovingAverage(FLAGS.moving_average_decay, global_step)
+            variables_averages_op = variable_averages.apply(tf.trainable_variables())
+            with tf.control_dependencies([variables_averages_op, train_op]):
+                train_op = tf.no_op()
+    tf.summary.scalar('model/accuracy', accuracy)
+    tf.summary.histogram('learning_rate', learning_rate)
 
-    return global_step, loss, train_op, sync_replicas_hook, accuracy
+    merge = tf.summary.merge_all()
+
+    writer = tf.summary.FileWriter('./graphs/', tf.get_default_graph())
+    writer.close()
+    return merge, global_step, loss, train_op, sync_replicas_hook, accuracy
 
 
 def main(argv=None):
@@ -88,12 +98,12 @@ def main(argv=None):
     device_setter = tf.train.replica_device_setter(
         worker_device='/job:worker/task:%d' % FLAGS.task_index, cluster=cluster)
 
-
     with tf.device(device_setter):
         # Design Graph
-        x = tf.placeholder(tf.float32, [None, mnist_inference.INPUT_NODE], name='x-input')
-        y_ = tf.placeholder(tf.float32, [None, mnist_inference.OUTPUT_NODE], name='y-input')
-        global_step, loss, train_op, sync_replicas_hook, accuracy = build_model(x, y_, n_workers, is_chief)
+        with tf.name_scope('input'):
+            x = tf.placeholder(tf.float32, [None, mnist_inference.INPUT_NODE], name='x-input')
+            y_ = tf.placeholder(tf.float32, [None, mnist_inference.OUTPUT_NODE], name='y-input')
+        summary, global_step, loss, train_op, sync_replicas_hook, accuracy = build_model(x, y_, n_workers, is_chief)
 
         hooks = [sync_replicas_hook, tf.train.StopAtStepHook(last_step=FLAGS.training_steps)]
         sess_config = tf.ConfigProto(allow_soft_placement=True, log_device_placement=True)
@@ -108,26 +118,24 @@ def main(argv=None):
         print('session started')
         step = 0
         start_time = time.time()
-        train_write = tf.summary.FileWriter('./graphs/dist-mnist.summary', tf.get_default_graph())
+        train_write = tf.summary.FileWriter('./graphs/', tf.get_default_graph())
 
         while not mon_sess.should_stop():
-            merge = tf.summary.merge_all()
             xs, ys = mnist.train.next_batch(FLAGS.batch_size)
-            summary, _, loss_value, global_step_value, accuracy_value = mon_sess.run(
-                [merge, train_op, loss, global_step, accuracy], feed_dict={x: xs, y_: ys})
-
-            # sec_per_batch = tf.summary.scalar('speed', )
+            summary_value, _, loss_value, global_step_value, accuracy_value = mon_sess.run(
+                [summary, train_op, loss, global_step, accuracy], feed_dict={x: xs, y_: ys})
+            train_write.add_summary(summary_value, global_step_value)
 
             if step > 0 and step % 100 == 0:
                 duration = time.time() - start_time
                 sec_per_batch = duration / global_step_value
                 format_str = "After %d training steps (%d global steps), " + \
                              "loss on training batch is %g. (%.3f sec/batch)" + \
-                             " Accuracy on test set is %g. (%.4f )"
-                print(format_str % (step, global_step_value, loss_value, sec_per_batch))
+                             "\n Accuracy on test set is (%.4f )"
+                print(format_str % (step, global_step_value, loss_value, sec_per_batch, accuracy_value))
 
-                if step < FLAGS.training_steps:
-                    print('Accuracy: {}'.format(accuracy_value))
+                # if step < FLAGS.training_steps:
+                #     print('Accuracy: {}'.format(accuracy_value))
 
             step += 1
 

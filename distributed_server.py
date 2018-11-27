@@ -74,11 +74,8 @@ def build_model(x, y_, n_workers, is_chief):
                 train_op = tf.no_op()
     tf.summary.scalar('model/accuracy', accuracy)
     tf.summary.histogram('learning_rate', learning_rate)
-
     merge = tf.summary.merge_all()
 
-    writer = tf.summary.FileWriter('./graphs/', tf.get_default_graph())
-    writer.close()
     return merge, global_step, loss, train_op, sync_replicas_hook, accuracy
 
 
@@ -118,7 +115,7 @@ def main(argv=None):
         print('session started')
         step = 0
         start_time = time.time()
-        train_write = tf.summary.FileWriter('./graphs/', tf.get_default_graph())
+        train_write = tf.summary.FileWriter('./graphs/{}/'.format(FLAGS.task_index), tf.get_default_graph())
 
         while not mon_sess.should_stop():
             xs, ys = mnist.train.next_batch(FLAGS.batch_size)
@@ -138,6 +135,7 @@ def main(argv=None):
                 #     print('Accuracy: {}'.format(accuracy_value))
 
             step += 1
+    train_write.close()
 
 
 if __name__ == "__main__":

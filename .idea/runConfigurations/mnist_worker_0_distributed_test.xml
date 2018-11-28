@@ -1,6 +1,5 @@
 <component name="ProjectRunConfigurationManager">
-  <configuration default="false" name="mnist_worker-1" type="PythonConfigurationType" factoryName="Python" folderName="tensorflow-tutorial">
-    <output_file path="./output.log" is_save="true" />
+  <configuration default="false" name="mnist_worker-0-distributed-test" type="PythonConfigurationType" factoryName="Python" folderName="distributed-tf-test">
     <module name="dist-mnist" />
     <option name="INTERPRETER_OPTIONS" value="" />
     <option name="PARENT_ENVS" value="true" />
@@ -14,7 +13,7 @@
     <option name="ADD_CONTENT_ROOTS" value="true" />
     <option name="ADD_SOURCE_ROOTS" value="true" />
     <option name="SCRIPT_NAME" value="$PROJECT_DIR$/distributed_server.py" />
-    <option name="PARAMETERS" value="--job_name worker --task_index 1 --ps_hosts 127.0.0.1:9910 --worker_hosts 127.0.0.1:9900,127.0.0.1:9901 --is_sync True" />
+    <option name="PARAMETERS" value="--job_name worker --task_index 0 --ps_hosts 10.0.0.176:9910 --worker_hosts 10.0.0.176:9900,10.0.0.236:9901 --is_sync True" />
     <option name="SHOW_COMMAND_LINE" value="false" />
     <option name="EMULATE_TERMINAL" value="false" />
     <option name="MODULE_MODE" value="false" />

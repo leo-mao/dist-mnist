@@ -1,4 +1,5 @@
 # coding : utf-8
+
 import tensorflow as tf
 import time
 import mnist_inference
@@ -35,11 +36,11 @@ IMAGE_PIXELS = 28
 def build_model(x, y_, n_workers, is_chief):
     with tf.name_scope('regularizer'):
         regularizer = tf.contrib.layers.l2_regularizer(FLAGS.regularaztion_rate)
+    with tf.name_scope('y'):
         y = mnist_inference.inference(x, regularizer)
-        tf.summary.histogram('layer2/y', y)
-
-    global_step = tf.train.get_or_create_global_step()
-    # init=tf.global_variables_initializer()
+        tf.summary.histogram('y', y)
+    with tf.name_scope('get_global_step'):
+        global_step = tf.train.get_or_create_global_step()
     with tf.name_scope('learning_rate'):
         learning_rate = tf.train.exponential_decay(
             FLAGS.learning_rate_base,
@@ -60,6 +61,7 @@ def build_model(x, y_, n_workers, is_chief):
             replicas_to_aggregate=n_workers,
             total_num_replicas=n_workers
         )
+    with tf.name_scope('optimizer'):
         train_op = opt.minimize(loss, global_step=global_step)
     with tf.name_scope('accuracy_evaluation'):
         with tf.name_scope('correct_prediction'):

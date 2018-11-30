@@ -14,21 +14,21 @@ def variable_summaries(var, name):
         tf.summary.scalar('stddev/' + name, stddev)
 
 
-def create_nn_layer(input_tensor, input_dim, output_dim, layer_name, regularizer, act=tf.nn.relu):
-    with tf.name_scope(layer_name):
-        with tf.name_scope(layer_name):
-            weights = get_weight_variable(regularizer, input_dim, output_dim)
-            variable_summaries(weights, layer_name + '/weights')
-        with tf.name_scope('biases'):
-            biases = tf.Variable(tf.constant(0.0, shape=[output_dim]))
-            variable_summaries(biases, layer_name + '/biases')
-        with tf.name_scope('Wx_plus_b'):
-            preactivate = tf.matmul(input_tensor, weights) + biases
-            tf.summary.histogram(layer_name + '/pre_activations', preactivate)
-
-        activations = act(preactivate, name='activation')
-        tf.summary.histogram(layer_name + '/activation', activations)
-        return activations
+# def create_nn_layer(input_tensor, input_dim, output_dim, layer_name, regularizer, act=tf.nn.relu):
+#     with tf.name_scope(layer_name):
+#         with tf.name_scope(layer_name):
+#             weights = get_weight_variable(regularizer, input_dim, output_dim)
+#             variable_summaries(weights, layer_name + '/weights')
+#         with tf.name_scope('biases'):
+#             biases = tf.Variable(tf.constant(0.0, shape=[output_dim]))
+#             variable_summaries(biases, layer_name + '/biases')
+#         with tf.name_scope('Wx_plus_b'):
+#             preactivate = tf.matmul(input_tensor, weights) + biases
+#             tf.summary.histogram(layer_name + '/pre_activations', preactivate)
+#
+#         activations = act(preactivate, name='activation')
+#         tf.summary.histogram(layer_name + '/activation', activations)
+#         return activations
 
 
 def get_weight_variable(regularizer, input_dim, output_dim):
@@ -39,9 +39,11 @@ def get_weight_variable(regularizer, input_dim, output_dim):
     return weights
 
 
-def inference(input_tensor, regularizer):
-    hidden1 = create_nn_layer(input_tensor, INPUT_NODE, LAYER1_NODE, 'fc-1', act=tf.nn.relu, regularizer=regularizer)
+def inference(input_tensor, regularizer, weights1, biases1, weights2, biases2):
+    if regularizer is None:
 
-    hidden2 = create_nn_layer(hidden1, LAYER1_NODE, OUTPUT_NODE, 'fc-2', act=tf.nn.relu, regularizer=regularizer)
-
-    return hidden2
+        layer1 = tf.nn.relu(tf.matmul(input_tensor, weights1) + biases1)
+        return tf.matmul(layer1, weights2) + biases2
+    else:
+        layer1 = tf.nn.relu(tf.matmul(input_tensor, regularizer(weights1)) + biases1)
+        return tf.matmul(layer1, regularizer(weights2)) + biases2

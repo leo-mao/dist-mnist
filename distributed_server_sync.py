@@ -6,14 +6,13 @@ import mnist_inference
 import tempfile
 from tensorflow.contrib.learn.python.learn.datasets.mnist import read_data_sets
 
-
 flags = tf.app.flags
 
 flags.DEFINE_string('data_dir', None, 'Directory for mnist data')
 flags.DEFINE_integer('hidden_units', 100, '')
 flags.DEFINE_integer('training_steps', 30000, '')
 flags.DEFINE_integer('batch_size', 50, '')
-flags.DEFINE_float('learning_rate_base', 1e-04, '')
+flags.DEFINE_float('learning_rate_base', 1e-02, '')
 flags.DEFINE_float('learning_rate_decay', 0.99, '')
 flags.DEFINE_float('moving_average_decay', 0.99, '')
 flags.DEFINE_float('regularaztion_rate', 1e-4, '')
@@ -36,8 +35,15 @@ IMAGE_PIXELS = 28
 def build_model(x, y_, n_workers, is_chief):
     with tf.name_scope('regularizer'):
         regularizer = tf.contrib.layers.l2_regularizer(FLAGS.regularaztion_rate)
-    with tf.name_scope('y'):
-        y = mnist_inference.inference(x, regularizer)
+    with tf.name_scope('inference'):
+        weights1 = mnist_inference.get_weight_variable(regularizer, mnist_inference.INPUT_NODE,
+                                                       mnist_inference.LAYER1_NODE)
+        weights2 = mnist_inference.get_weight_variable(regularizer, mnist_inference.LAYER1_NODE,
+                                                       mnist_inference.OUTPUT_NODE)
+        y = mnist_inference.inference(x, None, weights1,
+                                      tf.Variable(tf.constant(0.1, shape=[mnist_inference.LAYER1_NODE])),
+                                      weights2,
+                                      tf.Variable(tf.constant(0.1, shape=[mnist_inference.OUTPUT_NODE])))
         tf.summary.histogram('y', y)
     with tf.name_scope('get_global_step'):
         global_step = tf.train.get_or_create_global_step()
@@ -45,7 +51,8 @@ def build_model(x, y_, n_workers, is_chief):
         learning_rate = tf.train.exponential_decay(
             FLAGS.learning_rate_base,
             global_step,
-            FLAGS.training_steps,  # 60000???TODO mnist.train.num_examples, every batch decays some extent
+            FLAGS.training_steps / FLAGS.batch_size,
+            # 60000???TODO mnist.train.num_examples, every batch decays some extent
             FLAGS.learning_rate_decay)
 
     with tf.name_scope('cross_entropy'):
@@ -55,7 +62,7 @@ def build_model(x, y_, n_workers, is_chief):
         tf.summary.scalar('cross entropy', loss)
 
     with tf.name_scope('back_propagation'):
-        # tf.train.SyncReplicasOptimizer
+        # Sync
         opt = tf.train.SyncReplicasOptimizer(
             tf.train.GradientDescentOptimizer(learning_rate),
             replicas_to_aggregate=n_workers,
@@ -85,8 +92,7 @@ def build_model(x, y_, n_workers, is_chief):
     return merge, global_step, loss, train_op, sync_replicas_hook, accuracy
 
 
-def main(argv):
-
+def main(argv=None):
     ps_hosts = FLAGS.ps_hosts.split(',')
     worker_hosts = FLAGS.worker_hosts.split(',')
     n_workers = len(worker_hosts)
@@ -100,6 +106,7 @@ def main(argv):
     is_chief = (FLAGS.task_index == 0)
     mnist = read_data_sets('MNIST_data', one_hot=True)
     train_dir = FLAGS.model_save_path if FLAGS.model_save_path is not None else tempfile.mkdtemp()
+
     device_setter = tf.train.replica_device_setter(
         worker_device='/job:worker/task:%d' % FLAGS.task_index, cluster=cluster)
 
@@ -111,8 +118,9 @@ def main(argv):
 
         with tf.name_scope('stop_hook'):
             hooks = [sync_replicas_hook, tf.train.StopAtStepHook(last_step=FLAGS.training_steps)]
+
         with tf.name_scope('Session_config'):
-            sess_config = tf.ConfigProto(allow_soft_placement=True, log_device_placement=True)
+            sess_config = tf.ConfigProto(allow_soft_placement=True, log_device_placement=False)
 
     # input output
     with tf.train.MonitoredTrainingSession(master=server.target,
@@ -137,8 +145,14 @@ def main(argv):
                 sec_per_batch = duration / global_step_value
                 format_str = "After %d training steps (%d global steps), " + \
                              "loss on training batch is %g. (%.3f sec/batch)" + \
-                             "\n Accuracy on test set is (%.4f )"
-                print(format_str % (step, global_step_value, loss_value, sec_per_batch, accuracy_value))
+                             "\n Accuracy on Training set is (%.4f )"
+                validate_feed = {x: mnist.validation.images, y_: mnist.validation.labels}
+                print(format_str % (step, global_step_value, loss_value, sec_per_batch, mon_sess.run(accuracy,
+                                                                                                     feed_dict=
+                                                                                                     validate_feed)))
+                if step < FLAGS.training_steps:
+                    test_feed = {x: mnist.test.images, y_: mnist.test.labels}
+                    print("Accuracy on Test set is {}".format(mon_sess.run(accuracy, feed_dict=test_feed)))
 
             step += 1
     train_write.close()

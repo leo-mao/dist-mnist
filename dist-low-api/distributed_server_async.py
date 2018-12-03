@@ -9,7 +9,7 @@ from tensorflow.contrib.learn.python.learn.datasets.mnist import read_data_sets
 flags = tf.app.flags
 
 flags.DEFINE_string('data_dir', None, 'Directory for mnist data')
-flags.DEFINE_integer('hidden_units', 100, '')
+flags.DEFINE_integer('hidden_units', 512, '')
 flags.DEFINE_integer('training_steps', 30000, '')
 flags.DEFINE_integer('batch_size', 50, '')
 flags.DEFINE_float('learning_rate_base', 1e-02, '')
@@ -139,7 +139,7 @@ def main(argv=None):
                 sec_per_batch = duration / global_step_value
                 format_str = "After %d training steps (%d global steps), " + \
                              "loss on training batch is %g. (%.3f sec/batch)" + \
-                             "\n Accuracy on Training set is (%.4f )"
+                             "\n Accuracy on validation set is (%.4f )"
                 validate_feed = {x: mnist.validation.images, y_: mnist.validation.labels}
                 print(format_str % (step, global_step_value, loss_value, sec_per_batch, mon_sess.run(accuracy,
                                                                                                      feed_dict=

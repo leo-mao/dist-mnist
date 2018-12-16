@@ -25,12 +25,16 @@ parser.add_argument('--log-interval', type=int, default=10, metavar='N',
                     help='how many batches to wait before logging training status')
 parser.add_argument('--backend', type=str, default='gloo')
 parser.add_argument('--rank', type=int, default=0)
+parser.add_argument('--world-size', type=int, default=1)
 
 args = parser.parse_args()
 args.cuda = not args.no_cuda and torch.cuda.is_available()
-
+print('----Torch Config----')
+print('mini batch-size : {}'.format(args.batch_size))
+print('world-size : {}'.format(args.world_size))
+print('----------------------')
 # world_size is the number of processes
-dist.init_process_group(backend='gloo', world_size=1, group_name='pytorch_test',
+dist.init_process_group(backend='gloo', world_size=args.world_size, group_name='pytorch_test',
                         rank=args.rank)
 
 torch.manual_seed(args.seed)
@@ -46,7 +50,7 @@ train_dataset = datasets.MNIST('/home/dl/PycharmProjects/dist-mnist/MNIST_data/'
 
 train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset)
 
-kwargs = {'num_workers': 1, 'pin_memory': True} if args.cuda else {}
+kwargs = {'num_workers': args.world_size, 'pin_memory': True} if args.cuda else {}
 
 train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, **kwargs)
 test_loader = torch.utils.data.DataLoader(datasets.MNIST('/home/dl/PycharmProjects/dist-mnist/MNIST_data/', train=False,
@@ -99,7 +103,7 @@ def train(epoch):
         loss.backward()
         optimizer.step()
         if batch_idx % args.log_interval == 0:
-            print('Train Epoch: {} [{}/{} {:.0f}%)]\tLoss  {:.6f}s'.format(
+            print('Train Epoch: {} [{}/{} {:.0f}%)]\tLoss  {:.6f}'.format(
                 epoch, batch_idx * len(data), len(train_loader.dataset),
                        100. * batch_idx / len(train_loader),
                 loss))
@@ -126,15 +130,18 @@ def test():
 
 
 tot_time = 0
-
+start_wall_time = time.time()
 for epoch in range(1, args.epochs + 1):
     train_sampler.set_epoch(epoch)
     start_cpu_secs = time.time()
     train(epoch)
     end_cpu_secs = time.time()
-    print("Epoch {} of took {:.3f}".format(
-        epoch, args.epochs, end_cpu_secs - start_cpu_secs))
+    # print('start_cpu_secs {}'.format())
+    print("Epoch {} of took {:.3f}s [1]".format(
+        epoch, end_cpu_secs - start_cpu_secs))
+
     tot_time += end_cpu_secs - start_cpu_secs
-    test()
+    print('Current Total time : {:.3f}s'.format(tot_time))
+    # test()
 
 print("Total time= {:.3f}s".format(tot_time))

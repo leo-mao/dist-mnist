@@ -23,7 +23,7 @@ parser.add_argument('--no-cuda', action='store_true', default=False, help='disab
 parser.add_argument('--seed', type=int, default=1, metavar='S', help='random seed (default: 1)')
 parser.add_argument('--log-interval', type=int, default=10, metavar='N',
                     help='how many batches to wait before logging training status')
-parser.add_argument('--backend', type=str, default='gloo')
+parser.add_argument('--backend', type=str, default='nccl')
 parser.add_argument('--rank', type=int, default=0)
 parser.add_argument('--world-size', type=int, default=1)
 
@@ -32,9 +32,10 @@ args.cuda = not args.no_cuda and torch.cuda.is_available()
 print('----Torch Config----')
 print('mini batch-size : {}'.format(args.batch_size))
 print('world-size : {}'.format(args.world_size))
+print('backend : {}'.format(args.backend))
 print('--------------------')
 # world_size is the number of processes
-dist.init_process_group(backend='gloo', world_size=args.world_size, group_name='pytorch_test',
+dist.init_process_group(backend=args.backend, world_size=args.world_size, group_name='pytorch_test',
                         rank=args.rank)
 
 torch.manual_seed(args.seed)

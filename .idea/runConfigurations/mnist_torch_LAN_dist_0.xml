@@ -7,6 +7,7 @@
       <env name="PYTHONUNBUFFERED" value="1" />
       <env name="MASTER_ADDR" value="10.0.0.176" />
       <env name="MASTER_PORT" value="9901" />
+      <env name="NCCL_SOCKET_IFNAME" value="enp0s31f6" />
     </envs>
     <option name="SDK_HOME" value="" />
     <option name="WORKING_DIRECTORY" value="$PROJECT_DIR$/torch-dist" />

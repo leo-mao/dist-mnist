@@ -32,7 +32,7 @@ args.cuda = not args.no_cuda and torch.cuda.is_available()
 print('----Torch Config----')
 print('mini batch-size : {}'.format(args.batch_size))
 print('world-size : {}'.format(args.world_size))
-print('----------------------')
+print('--------------------')
 # world_size is the number of processes
 dist.init_process_group(backend='gloo', world_size=args.world_size, group_name='pytorch_test',
                         rank=args.rank)
@@ -91,7 +91,6 @@ optimizer = optim.SGD(model.parameters(), lr=args.lr, momentum=args.momentum)
 
 
 def train(epoch):
-    print('train start')
     model.train()
     for batch_idx, (data, target) in enumerate(train_loader):
         if args.cuda:
@@ -103,10 +102,8 @@ def train(epoch):
         loss.backward()
         optimizer.step()
         if batch_idx % args.log_interval == 0:
-            print('Train Epoch: {} [{}/{} {:.0f}%)]\tLoss  {:.6f}'.format(
-                epoch, batch_idx * len(data), len(train_loader.dataset),
-                       100. * batch_idx / len(train_loader),
-                loss))
+            print('Train Epoch {} - {} / {:3.0f} \tLoss  {:.6f}'.format(
+                epoch, batch_idx, 1.0 * len(train_loader.dataset) / len(data), loss))
 
 
 def test():
@@ -137,7 +134,7 @@ for epoch in range(1, args.epochs + 1):
     train(epoch)
     end_cpu_secs = time.time()
     # print('start_cpu_secs {}'.format())
-    print("Epoch {} of took {:.3f}s [1]".format(
+    print("Epoch {} of took {:.3f}s".format(
         epoch, end_cpu_secs - start_cpu_secs))
 
     tot_time += end_cpu_secs - start_cpu_secs

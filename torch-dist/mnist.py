@@ -45,7 +45,7 @@ if args.cuda:
 else:
     device = torch.device('cpu')
 
-train_dataset = datasets.MNIST('/home/dl/PycharmProjects/dist-mnist/MNIST_data/', train=True,
+train_dataset = datasets.MNIST('../MNIST_data/', train=True,
                                transform=transforms.Compose([transforms.ToTensor(),
                                                              transforms.Normalize((0.1307,), (0.3081,))]))
 
@@ -54,7 +54,7 @@ train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset)
 kwargs = {'num_workers': args.world_size, 'pin_memory': True} if args.cuda else {}
 
 train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, **kwargs)
-test_loader = torch.utils.data.DataLoader(datasets.MNIST('/home/dl/PycharmProjects/dist-mnist/MNIST_data/', train=False,
+test_loader = torch.utils.data.DataLoader(datasets.MNIST('../MNIST_data/', train=False,
                                                          transform=transforms.Compose(
                                                              [transforms.ToTensor(),
                                                               transforms.Normalize((0.1307,), (0.3081,))])),

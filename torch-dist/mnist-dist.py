@@ -26,9 +26,9 @@ parser.add_argument('--no-cuda', action='store_true', default=False, help='disab
 parser.add_argument('--seed', type=int, default=1, metavar='S', help='random seed (default: 1)')
 parser.add_argument('--log-interval', type=int, default=10, metavar='N',
                     help='how many batches to wait before logging training status')
-parser.add_argument('--backend', type=str, default='gloo')
+parser.add_argument('--backend', type=str, default='nccl')
 parser.add_argument('--rank', type=int, default=0)
-parser.add_argument('--world-size', type=int, default=2)
+parser.add_argument('--world-size', type=int, default=1)
 parser.add_argument('--local_rank', type=int)
 args = parser.parse_args()
 args.cuda = not args.no_cuda and torch.cuda.is_available()
@@ -121,19 +121,19 @@ def partition_dataset():
 
 def average_gradients(model):
     """ Gradient averaging"""
-    group = dist.new_group([x for x in range(args.world_size)])
+    # group = dist.new_group([x for x in range(args.world_size)])
     size = float(dist.get_world_size())
 
     for param in model.parameters():
-        dist.all_reduce(param.grad.data, op=dist.ReduceOp.SUM, group=group)
+        dist.all_reduce(param.grad.data, op=dist.ReduceOp.SUM)
         param.grad.data /= size
 
 
 def cal_print_summary(rank, loss, accuracy):
     group = dist.new_group([x for x in range(args.world_size)])
     size = float(dist.get_world_size())
-    summaries = torch.tensor([loss, accuracy])
-    dist.reduce(summaries, 0, op=dist.ReduceOp.SUM, group=group)
+    summaries = torch.tensor([loss, accuracy], requires_grad=False, device='cuda')
+    dist.reduce(summaries, 0, op=dist.ReduceOp.SUM)
     if rank == 0:
         summaries /= size
         print('\nSystem : Average loss: {:.4f}, Average Accuracy: {:.2f}%\n'.format(summaries[0], summaries[1] * 100))

@@ -12,6 +12,7 @@ import torch.optim as optim
 from random import Random
 from torchvision import datasets, transforms
 from torch.autograd import Variable
+from torch.multiprocessing import Process
 
 
 parser = argparse.ArgumentParser(description='PyTorch MNIST Example')
@@ -26,20 +27,13 @@ parser.add_argument('--no-cuda', action='store_true', default=False, help='disab
 parser.add_argument('--seed', type=int, default=1, metavar='S', help='random seed (default: 1)')
 parser.add_argument('--log-interval', type=int, default=10, metavar='N',
                     help='how many batches to wait before logging training status')
-parser.add_argument('--backend', type=str, default='nccl')
+parser.add_argument('--backend', type=str, default='gloo')
 parser.add_argument('--rank', type=int, default=0)
-parser.add_argument('--world-size', type=int, default=1)
+parser.add_argument('--world-size', type=int, default=2)
 parser.add_argument('--local_rank', type=int)
 args = parser.parse_args()
 args.cuda = not args.no_cuda and torch.cuda.is_available()
-print('----Torch Config----')
-print('mini batch-size : {}'.format(args.batch_size))
-print('world-size : {}'.format(args.world_size))
-print('backend : {}'.format(args.backend))
-print('--------------------')
-# world_size is the number of processes
-dist.init_process_group(backend=args.backend, world_size=args.world_size, group_name='pytorch_test',
-                        rank=args.rank)
+
 
 
 class Partition(object):
@@ -121,7 +115,6 @@ def partition_dataset():
 
 def average_gradients(model):
     """ Gradient averaging"""
-    # group = dist.new_group([x for x in range(args.world_size)])
     size = float(dist.get_world_size())
 
     for param in model.parameters():
@@ -129,14 +122,16 @@ def average_gradients(model):
         param.grad.data /= size
 
 
-def cal_print_summary(rank, loss, accuracy):
-    group = dist.new_group([x for x in range(args.world_size)])
+def cal_print_summary(rank, loss, accuracy, average_epoch_time, tot_time):
+    import logging
     size = float(dist.get_world_size())
-    summaries = torch.tensor([loss, accuracy], requires_grad=False, device='cuda')
+    summaries = torch.tensor([loss, accuracy, average_epoch_time, tot_time], requires_grad=False, device='cuda')
     dist.reduce(summaries, 0, op=dist.ReduceOp.SUM)
     if rank == 0:
         summaries /= size
-        print('\nSystem : Average loss: {:.4f}, Average Accuracy: {:.2f}%\n'.format(summaries[0], summaries[1] * 100))
+        logging.critical('\n[Summary]System : Average loss: {:.4f}, Average accuracy: {:.2f}%, '
+                         'Average epoch time(ex. 1.): {:.2f}s, Average total time : {:.2f}s\n'
+                         .format(summaries[0], summaries[1] * 100, summaries[2], summaries[3]))
 
 
 def train(model, optimizer, train_loader, epoch):
@@ -180,6 +175,12 @@ def test(test_loader, model):
 
 def run(rank, batch_size, world_size):
     """ Distributed Synchronous SGD Example """
+    print('----Torch Config----')
+    print('rank : {}'.format(rank))
+    print('mini batch-size : {}'.format(batch_size))
+    print('world-size : {}'.format(world_size))
+    print('backend : {}'.format(args.backend))
+    print('--------------------')
 
     if args.cuda:
         torch.cuda.manual_seed(args.seed)
@@ -235,11 +236,29 @@ def run(rank, batch_size, world_size):
     test_loss, accuracy = test(test_loader, model)
 
     if args.epochs > 1:
-        print('Average epoch time(ex. 1.) : {:.3f}s'.format(float(tot_time - first_epoch)
-                                                            / (args.epochs - 1)))
-    print("Total time : {:.3f}s".format(tot_time))
-    cal_print_summary(rank, test_loss, accuracy)
+        average_epoch_time = float(tot_time - first_epoch) / (args.epochs - 1)
+        print('Average epoch time(ex. 1.) : {:.3f}s'.format(average_epoch_time))
+        print("Total time : {:.3f}s".format(tot_time))
+        cal_print_summary(rank, test_loss, accuracy, average_epoch_time, tot_time)
+
+
+def init_processes(rank, world_size, fn, batch_size, backend='gloo'):
+    import os
+    os.environ['MASTER_ADDR'] = '10.0.0.176'
+    os.environ['MASTER_PORT'] = '9901'
+    os.environ['CUDA_VISIBLE_DEVICES=0,1'] = '0,1'
+    dist.init_process_group(backend=backend, world_size=world_size, rank=rank)
+    fn(rank, batch_size, world_size)
 
 
 if __name__ == '__main__':
-    run(args.rank, args.batch_size, args.world_size)
+    torch.multiprocessing.set_start_method('spawn')
+    processes = []
+    for rank in range(args.world_size):
+        p = Process(target=init_processes,
+                    args=(rank, args.world_size, run, args.batch_size, args.backend))
+        p.start()
+        processes.append(p)
+
+    for p in processes:
+        p.join()

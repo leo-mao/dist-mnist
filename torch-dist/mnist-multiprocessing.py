@@ -16,17 +16,16 @@ parser.add_argument('--batch-size', type=int, default=64, metavar='N',
                     help='input batch size for training (default: 64)')
 parser.add_argument('--test-batch-size', type=int, default=1000, metavar='N',
                     help='input batch size for testing (default: 1000)')
-parser.add_argument('--epochs', type=int, default=10, metavar='N', help='number of epochs to train (default: 10)')
+parser.add_argument('--epochs', type=int, default=5, metavar='N', help='number of epochs to train (default: 10)')
 parser.add_argument('--lr', type=float, default=0.01, metavar='LR', help='learning rate (default: 0.01)')
 parser.add_argument('--momentum', type=float, default=0.5, metavar='M', help='SGD momentum (default: 0.5)')
 parser.add_argument('--no-cuda', action='store_true', default=False, help='disables CUDA training')
 parser.add_argument('--seed', type=int, default=1, metavar='S', help='random seed (default: 1)')
 parser.add_argument('--log-interval', type=int, default=10, metavar='N',
                     help='how many batches to wait before logging training status')
-parser.add_argument('--backend', type=str, default='nccl')
+parser.add_argument('--backend', type=str, default='gloo')
 parser.add_argument('--rank', type=int, default=0)
-parser.add_argument('--world-size', type=int, default=1)
-
+parser.add_argument('--world-size', type=int, default=4)
 args = parser.parse_args()
 args.cuda = not args.no_cuda and torch.cuda.is_available()
 print('----Torch Config----')
@@ -42,6 +41,7 @@ torch.manual_seed(args.seed)
 if args.cuda:
     torch.cuda.manual_seed(args.seed)
     device = torch.device('cuda')
+    # torch.cuda.set_device(args.local_rank)
 else:
     device = torch.device('cpu')
 
@@ -49,7 +49,8 @@ train_dataset = datasets.MNIST('../MNIST_data/', train=True,
                                transform=transforms.Compose([transforms.ToTensor(),
                                                              transforms.Normalize((0.1307,), (0.3081,))]))
 
-train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset)
+train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset, num_replicas=args.world_size,
+                                                                rank=args.rank)
 
 kwargs = {'num_workers': args.world_size, 'pin_memory': True} if args.cuda else {}
 
@@ -87,6 +88,7 @@ cudnn.benchmark = True
 if args.cuda:
     model.cuda(device=device)
     model = nn.parallel.DataParallel(model)
+    # model = nn.parallel.DistributedDataParallel(model, device_ids=[args.local_rank], output_device=args.local_rank)
 
 optimizer = optim.SGD(model.parameters(), lr=args.lr, momentum=args.momentum)
 
@@ -140,6 +142,7 @@ for epoch in range(1, args.epochs + 1):
 
     tot_time += end_cpu_secs - start_cpu_secs
     print('Current Total time : {:.3f}s'.format(tot_time))
-    # test()
+
+test()
 
 print("Total time= {:.3f}s".format(tot_time))

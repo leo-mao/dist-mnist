@@ -1,5 +1,5 @@
 <component name="ProjectRunConfigurationManager">
-  <configuration default="false" name="mnist-torch-LAN_dist-1" type="PythonConfigurationType" factoryName="Python">
+  <configuration default="false" name="mnist-torch-LAN_dist-1" type="PythonConfigurationType" factoryName="Python" folderName="Torch-LAN-dist">
     <module name="dist-mnist" />
     <option name="INTERPRETER_OPTIONS" value="" />
     <option name="PARENT_ENVS" value="true" />
@@ -14,7 +14,7 @@
     <option name="IS_MODULE_SDK" value="true" />
     <option name="ADD_CONTENT_ROOTS" value="true" />
     <option name="ADD_SOURCE_ROOTS" value="true" />
-    <option name="SCRIPT_NAME" value="$PROJECT_DIR$/torch-dist/mnist.py" />
+    <option name="SCRIPT_NAME" value="$PROJECT_DIR$/torch-dist/mnist-multiprocessing.py" />
     <option name="PARAMETERS" value="--rank 1 --batch-size 256 --world-size 2" />
     <option name="SHOW_COMMAND_LINE" value="false" />
     <option name="EMULATE_TERMINAL" value="false" />

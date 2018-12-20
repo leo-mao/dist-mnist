@@ -1,18 +1,22 @@
 import argparse
-import torch.nn as nn
 import time
-
+import torch
+import torch.nn as nn
 import torch.nn.functional as F
 import torch.backends.cudnn as cudnn
 import torch.distributed as dist
 import torch.utils.data
 import torch.utils.data.distributed
 import torch.optim as optim
+
+from random import Random
 from torchvision import datasets, transforms
 from torch.autograd import Variable
+from torch.multiprocessing import Process
+
 
 parser = argparse.ArgumentParser(description='PyTorch MNIST Example')
-parser.add_argument('--batch-size', type=int, default=64, metavar='N',
+parser.add_argument('--batch-size', type=int, default=256, metavar='N',
                     help='input batch size for training (default: 64)')
 parser.add_argument('--test-batch-size', type=int, default=1000, metavar='N',
                     help='input batch size for testing (default: 1000)')
@@ -26,40 +30,45 @@ parser.add_argument('--log-interval', type=int, default=10, metavar='N',
 parser.add_argument('--backend', type=str, default='gloo')
 parser.add_argument('--rank', type=int, default=0)
 parser.add_argument('--world-size', type=int, default=4)
+parser.add_argument('--local_rank', type=int)
 args = parser.parse_args()
 args.cuda = not args.no_cuda and torch.cuda.is_available()
-print('----Torch Config----')
-print('mini batch-size : {}'.format(args.batch_size))
-print('world-size : {}'.format(args.world_size))
-print('backend : {}'.format(args.backend))
-print('--------------------')
-# world_size is the number of processes
-dist.init_process_group(backend=args.backend, world_size=args.world_size, group_name='pytorch_test',
-                        rank=args.rank)
 
-torch.manual_seed(args.seed)
-if args.cuda:
-    torch.cuda.manual_seed(args.seed)
-    device = torch.device('cuda')
-    # torch.cuda.set_device(args.local_rank)
-else:
-    device = torch.device('cpu')
 
-train_dataset = datasets.MNIST('../MNIST_data/', train=True,
-                               transform=transforms.Compose([transforms.ToTensor(),
-                                                             transforms.Normalize((0.1307,), (0.3081,))]))
-
-train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset, num_replicas=args.world_size,
-                                                                rank=args.rank)
-
-kwargs = {'num_workers': args.world_size, 'pin_memory': True} if args.cuda else {}
-
-train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, **kwargs)
-test_loader = torch.utils.data.DataLoader(datasets.MNIST('../MNIST_data/', train=False,
-                                                         transform=transforms.Compose(
-                                                             [transforms.ToTensor(),
-                                                              transforms.Normalize((0.1307,), (0.3081,))])),
-                                          batch_size=args.test_batch_size, shuffle=True, **kwargs)
+# class Partition(object):
+#     """ Dataset-like object, but only access a subset of it"""
+#
+#     def __init__(self, data, index):
+#         self.data = data
+#         self.index = index
+#
+#     def __len__(self):
+#         return len(self.index)
+#
+#     def __getitem__(self, index):
+#         data_idx = self.index[index]
+#         return self.data[data_idx]
+#
+#
+# class DataPartitioner(object):
+#     """ Partitions a dataset into different chuncks. """
+#
+#     def __init__(self, data, sizes=[0.7, 0.2, 0.1], seed=1234):
+#         self.data = data
+#         self.partitions = []
+#         rand = Random()
+#         rand.seed(seed)
+#         data_len = len(data)
+#         indexes = [x for x in range(0, data_len)]
+#         rand.shuffle(indexes)
+#
+#         for fraction in sizes:
+#             part_len = int(fraction * data_len)
+#             self.partitions.append(indexes[0:part_len])
+#             indexes = indexes[part_len]
+#
+#     def use(self, partition):
+#         return Partition(self.data, self.partitions[partition])
 
 
 class Net(nn.Module):
@@ -82,18 +91,49 @@ class Net(nn.Module):
         return F.log_softmax(x, dim=0)
 
 
-model = Net()
-cudnn.benchmark = True
+# def partition_dataset():
+#     """ Partitioning MNIST"""
+#     dataset = datasets.MNIST(
+#         '../MNIST_data',
+#         train=True,
+#         download=True,
+#         transform=transforms.Compose([
+#             transforms.ToTensor(),
+#             transforms.Normalize((0.1307,), (0.3081,))
+#         ])
+#     )
+#     size = dist.get_world_size()
+#     batch_size = 1.0 * 128 / size
+#     partition_sizes = [1.0 / size for _ in range(size)]
+#     partition = DataPartitioner(dataset, partition_sizes)
+#     partition = partition.use(dist.get_rank())
+#     train_set = torch.utils.data.DataLoader(
+#         partition, batch_size=batch_size, shuffle=True)
+#     return train_set, batch_size
 
-if args.cuda:
-    model.cuda(device=device)
-    model = nn.parallel.DataParallel(model)
-    # model = nn.parallel.DistributedDataParallel(model, device_ids=[args.local_rank], output_device=args.local_rank)
 
-optimizer = optim.SGD(model.parameters(), lr=args.lr, momentum=args.momentum)
+def average_gradients(model):
+    """ Gradient averaging"""
+    size = float(dist.get_world_size())
+
+    for param in model.parameters():
+        dist.all_reduce(param.grad.data, op=dist.ReduceOp.SUM)
+        param.grad.data /= size
 
 
-def train(epoch):
+def summary_print(rank, loss, accuracy, average_epoch_time, tot_time):
+    import logging
+    size = float(dist.get_world_size())
+    summaries = torch.tensor([loss, accuracy, average_epoch_time, tot_time], requires_grad=False, device='cuda')
+    dist.reduce(summaries, 0, op=dist.ReduceOp.SUM)
+    if rank == 0:
+        summaries /= size
+        logging.critical('\n[Summary]System : Average epoch time(ex. 1.): {:.2f}s, Average total time : {:.2f}s '
+                         'Average loss: {:.4f}\n, Average accuracy: {:.2f}%'
+                         .format(summaries[2], summaries[3], summaries[0], summaries[1] * 100))
+
+
+def train(model, optimizer, train_loader, epoch):
     model.train()
     for batch_idx, (data, target) in enumerate(train_loader):
         if args.cuda:
@@ -104,12 +144,14 @@ def train(epoch):
         loss = F.nll_loss(output, target)
         loss.backward()
         optimizer.step()
+        if args.world_size > 1:
+            average_gradients(model)
         if batch_idx % args.log_interval == 0:
             print('Train Epoch {} - {} / {:3.0f} \tLoss  {:.6f}'.format(
                 epoch, batch_idx, 1.0 * len(train_loader.dataset) / len(data), loss))
 
 
-def test():
+def test(test_loader, model):
     model.eval()
     test_loss = 0
     correct = 0
@@ -124,25 +166,99 @@ def test():
         correct += pred.eq(target.data.view_as(pred)).cpu().sum()
 
     test_loss /= len(test_loader.dataset)
-    print('\n Test set: Average loss: {:.4f}, Accuracy: {}/{} ({:.0f}%)\n'
+    print('\nTest set : Average loss: {:.4f}, Accuracy: {}/{} ({:.0f}%)\n'
           .format(test_loss, correct, len(test_loader.dataset),
                   100. * correct / len(test_loader.dataset)))
+    return test_loss, float(correct) / len(test_loader.dataset)
 
 
-tot_time = 0
-start_wall_time = time.time()
-for epoch in range(1, args.epochs + 1):
-    train_sampler.set_epoch(epoch)
-    start_cpu_secs = time.time()
-    train(epoch)
-    end_cpu_secs = time.time()
-    # print('start_cpu_secs {}'.format())
-    print("Epoch {} of took {:.3f}s".format(
-        epoch, end_cpu_secs - start_cpu_secs))
+def run(rank, batch_size, world_size):
+    """ Distributed Synchronous SGD Example """
+    print('----Torch Config----')
+    print('rank : {}'.format(rank))
+    print('mini batch-size : {}'.format(batch_size))
+    print('world-size : {}'.format(world_size))
+    print('backend : {}'.format(args.backend))
+    print('--------------------')
 
-    tot_time += end_cpu_secs - start_cpu_secs
-    print('Current Total time : {:.3f}s'.format(tot_time))
+    if args.cuda:
+        torch.cuda.manual_seed(args.seed)
+        device = torch.device('cuda')
+        # torch.cuda.set_device(args.local_rank)
+    else:
+        device = torch.device('cpu')
 
-test()
+    train_dataset = datasets.MNIST('../MNIST_data/', train=True,
+                                   transform=transforms.Compose([transforms.ToTensor(),
+                                                                 transforms.Normalize((0.1307,), (0.3081,))]))
 
-print("Total time= {:.3f}s".format(tot_time))
+    train_sampler = torch.utils.data.distributed.DistributedSampler(train_dataset, num_replicas=world_size,
+                                                                    rank=rank)
+
+    kwargs = {'num_workers': args.world_size, 'pin_memory': True} if args.cuda else {}
+
+    train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=batch_size, shuffle=True, **kwargs)
+    test_loader = torch.utils.data.DataLoader(datasets.MNIST('../MNIST_data/', train=False,
+                                                             transform=transforms.Compose(
+                                                                 [transforms.ToTensor(),
+                                                                  transforms.Normalize((0.1307,), (0.3081,))])),
+                                              batch_size=args.test_batch_size, shuffle=True, **kwargs)
+
+    model = Net()
+    cudnn.benchmark = True
+
+    if args.cuda:
+        model.cuda(device=device)
+        model = nn.parallel.DataParallel(model)
+        # model = nn.parallel.DistributedDataParallel(model, device_ids=[args.local_rank], output_device=args.local_rank)
+
+    optimizer = optim.SGD(model.parameters(), lr=args.lr, momentum=args.momentum)
+
+    torch.manual_seed(args.seed)
+    tot_time = 0
+    first_epoch = 0
+
+    for epoch in range(1, args.epochs + 1):
+        train_sampler.set_epoch(epoch)
+        start_cpu_secs = time.time()
+        train(model, optimizer, train_loader, epoch)
+        end_cpu_secs = time.time()
+        # print('start_cpu_secs {}'.format())
+        print("Epoch {} of took {:.3f}s".format(
+            epoch, end_cpu_secs - start_cpu_secs))
+
+        tot_time += end_cpu_secs - start_cpu_secs
+        print('Current Total time : {:.3f}s'.format(tot_time))
+        if epoch == 1:
+            first_epoch = tot_time
+
+    test_loss, accuracy = test(test_loader, model)
+
+    if args.epochs > 1:
+        average_epoch_time = float(tot_time - first_epoch) / (args.epochs - 1)
+        print('Average epoch time(ex. 1.) : {:.3f}s'.format(average_epoch_time))
+        print("Total time : {:.3f}s".format(tot_time))
+        if args.world_size > 1:
+            summary_print(rank, test_loss, accuracy, average_epoch_time, tot_time)
+
+
+def init_processes(rank, world_size, fn, batch_size, backend='gloo'):
+    import os
+    os.environ['MASTER_ADDR'] = '10.0.0.176'
+    os.environ['MASTER_PORT'] = '9901'
+    os.environ['CUDA_VISIBLE_DEVICES=0,1'] = '0,1'
+    dist.init_process_group(backend=backend, world_size=world_size, rank=rank)
+    fn(rank, batch_size, world_size)
+
+
+if __name__ == '__main__':
+    torch.multiprocessing.set_start_method('spawn')
+    processes = []
+    for rank in range(args.world_size):
+        p = Process(target=init_processes,
+                    args=(rank, args.world_size, run, args.batch_size, args.backend))
+        p.start()
+        processes.append(p)
+
+    for p in processes:
+        p.join()

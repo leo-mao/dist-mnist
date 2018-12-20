@@ -29,47 +29,46 @@ parser.add_argument('--log-interval', type=int, default=10, metavar='N',
                     help='how many batches to wait before logging training status')
 parser.add_argument('--backend', type=str, default='gloo')
 parser.add_argument('--rank', type=int, default=0)
-parser.add_argument('--world-size', type=int, default=2)
+parser.add_argument('--world-size', type=int, default=4)
 parser.add_argument('--local_rank', type=int)
 args = parser.parse_args()
 args.cuda = not args.no_cuda and torch.cuda.is_available()
 
 
-
-class Partition(object):
-    """ Dataset-like object, but only access a subset of it"""
-
-    def __init__(self, data, index):
-        self.data = data
-        self.index = index
-
-    def __len__(self):
-        return len(self.index)
-
-    def __getitem__(self, index):
-        data_idx = self.index[index]
-        return self.data[data_idx]
-
-
-class DataPartitioner(object):
-    """ Partitions a dataset into different chuncks. """
-
-    def __init__(self, data, sizes=[0.7, 0.2, 0.1], seed=1234):
-        self.data = data
-        self.partitions = []
-        rand = Random()
-        rand.seed(seed)
-        data_len = len(data)
-        indexes = [x for x in range(0, data_len)]
-        rand.shuffle(indexes)
-
-        for fraction in sizes:
-            part_len = int(fraction * data_len)
-            self.partitions.append(indexes[0:part_len])
-            indexes = indexes[part_len]
-
-    def use(self, partition):
-        return Partition(self.data, self.partitions[partition])
+# class Partition(object):
+#     """ Dataset-like object, but only access a subset of it"""
+#
+#     def __init__(self, data, index):
+#         self.data = data
+#         self.index = index
+#
+#     def __len__(self):
+#         return len(self.index)
+#
+#     def __getitem__(self, index):
+#         data_idx = self.index[index]
+#         return self.data[data_idx]
+#
+#
+# class DataPartitioner(object):
+#     """ Partitions a dataset into different chuncks. """
+#
+#     def __init__(self, data, sizes=[0.7, 0.2, 0.1], seed=1234):
+#         self.data = data
+#         self.partitions = []
+#         rand = Random()
+#         rand.seed(seed)
+#         data_len = len(data)
+#         indexes = [x for x in range(0, data_len)]
+#         rand.shuffle(indexes)
+#
+#         for fraction in sizes:
+#             part_len = int(fraction * data_len)
+#             self.partitions.append(indexes[0:part_len])
+#             indexes = indexes[part_len]
+#
+#     def use(self, partition):
+#         return Partition(self.data, self.partitions[partition])
 
 
 class Net(nn.Module):
@@ -92,25 +91,25 @@ class Net(nn.Module):
         return F.log_softmax(x, dim=0)
 
 
-def partition_dataset():
-    """ Partitioning MNIST"""
-    dataset = datasets.MNIST(
-        '../MNIST_data',
-        train=True,
-        download=True,
-        transform=transforms.Compose([
-            transforms.ToTensor(),
-            transforms.Normalize((0.1307,), (0.3081,))
-        ])
-    )
-    size = dist.get_world_size()
-    batch_size = 1.0 * 128 / size
-    partition_sizes = [1.0 / size for _ in range(size)]
-    partition = DataPartitioner(dataset, partition_sizes)
-    partition = partition.use(dist.get_rank())
-    train_set = torch.utils.data.DataLoader(
-        partition, batch_size=batch_size, shuffle=True)
-    return train_set, batch_size
+# def partition_dataset():
+#     """ Partitioning MNIST"""
+#     dataset = datasets.MNIST(
+#         '../MNIST_data',
+#         train=True,
+#         download=True,
+#         transform=transforms.Compose([
+#             transforms.ToTensor(),
+#             transforms.Normalize((0.1307,), (0.3081,))
+#         ])
+#     )
+#     size = dist.get_world_size()
+#     batch_size = 1.0 * 128 / size
+#     partition_sizes = [1.0 / size for _ in range(size)]
+#     partition = DataPartitioner(dataset, partition_sizes)
+#     partition = partition.use(dist.get_rank())
+#     train_set = torch.utils.data.DataLoader(
+#         partition, batch_size=batch_size, shuffle=True)
+#     return train_set, batch_size
 
 
 def average_gradients(model):
@@ -122,16 +121,16 @@ def average_gradients(model):
         param.grad.data /= size
 
 
-def cal_print_summary(rank, loss, accuracy, average_epoch_time, tot_time):
+def summary_print(rank, loss, accuracy, average_epoch_time, tot_time):
     import logging
     size = float(dist.get_world_size())
     summaries = torch.tensor([loss, accuracy, average_epoch_time, tot_time], requires_grad=False, device='cuda')
     dist.reduce(summaries, 0, op=dist.ReduceOp.SUM)
     if rank == 0:
         summaries /= size
-        logging.critical('\n[Summary]System : Average loss: {:.4f}, Average accuracy: {:.2f}%, '
-                         'Average epoch time(ex. 1.): {:.2f}s, Average total time : {:.2f}s\n'
-                         .format(summaries[0], summaries[1] * 100, summaries[2], summaries[3]))
+        logging.critical('\n[Summary]System : Average epoch time(ex. 1.): {:.2f}s, Average total time : {:.2f}s '
+                         'Average loss: {:.4f}\n, Average accuracy: {:.2f}%'
+                         .format(summaries[2], summaries[3], summaries[0], summaries[1] * 100))
 
 
 def train(model, optimizer, train_loader, epoch):
@@ -145,8 +144,8 @@ def train(model, optimizer, train_loader, epoch):
         loss = F.nll_loss(output, target)
         loss.backward()
         optimizer.step()
-
-        average_gradients(model)
+        if args.world_size > 1:
+            average_gradients(model)
         if batch_idx % args.log_interval == 0:
             print('Train Epoch {} - {} / {:3.0f} \tLoss  {:.6f}'.format(
                 epoch, batch_idx, 1.0 * len(train_loader.dataset) / len(data), loss))
@@ -239,7 +238,8 @@ def run(rank, batch_size, world_size):
         average_epoch_time = float(tot_time - first_epoch) / (args.epochs - 1)
         print('Average epoch time(ex. 1.) : {:.3f}s'.format(average_epoch_time))
         print("Total time : {:.3f}s".format(tot_time))
-        cal_print_summary(rank, test_loss, accuracy, average_epoch_time, tot_time)
+        if args.world_size > 1:
+            summary_print(rank, test_loss, accuracy, average_epoch_time, tot_time)
 
 
 def init_processes(rank, world_size, fn, batch_size, backend='gloo'):

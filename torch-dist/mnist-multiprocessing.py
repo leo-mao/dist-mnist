@@ -59,7 +59,7 @@ def average_gradients(model):
     size = float(dist.get_world_size())
 
     for param in model.parameters():
-        dist.all_reduce_multigpu(param.grad.data, op=dist.ReduceOp.SUM)
+        dist.all_reduce(param.grad.data, op=dist.ReduceOp.SUM)
         param.grad.data /= size
 
 
@@ -193,7 +193,7 @@ def init_processes(rank, world_size, fn, batch_size, backend='gloo'):
     import os
     os.environ['MASTER_ADDR'] = '10.0.0.176'
     os.environ['MASTER_PORT'] = '9901'
-    os.environ['CUDA_VISIBLE_DEVICES=0,1'] = '0,1'
+    os.environ['CUDA_VISIBLE_DEVICES'] = '0,1'
     dist.init_process_group(backend=backend, world_size=world_size, rank=rank)
     fn(rank, batch_size, world_size)
 

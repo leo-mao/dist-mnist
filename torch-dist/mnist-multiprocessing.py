@@ -29,47 +29,10 @@ parser.add_argument('--log-interval', type=int, default=10, metavar='N',
                     help='how many batches to wait before logging training status')
 parser.add_argument('--backend', type=str, default='gloo')
 parser.add_argument('--rank', type=int, default=0)
-parser.add_argument('--world-size', type=int, default=4)
+parser.add_argument('--world-size', type=int, default=2)
 parser.add_argument('--local_rank', type=int)
 args = parser.parse_args()
 args.cuda = not args.no_cuda and torch.cuda.is_available()
-
-
-# class Partition(object):
-#     """ Dataset-like object, but only access a subset of it"""
-#
-#     def __init__(self, data, index):
-#         self.data = data
-#         self.index = index
-#
-#     def __len__(self):
-#         return len(self.index)
-#
-#     def __getitem__(self, index):
-#         data_idx = self.index[index]
-#         return self.data[data_idx]
-#
-#
-# class DataPartitioner(object):
-#     """ Partitions a dataset into different chuncks. """
-#
-#     def __init__(self, data, sizes=[0.7, 0.2, 0.1], seed=1234):
-#         self.data = data
-#         self.partitions = []
-#         rand = Random()
-#         rand.seed(seed)
-#         data_len = len(data)
-#         indexes = [x for x in range(0, data_len)]
-#         rand.shuffle(indexes)
-#
-#         for fraction in sizes:
-#             part_len = int(fraction * data_len)
-#             self.partitions.append(indexes[0:part_len])
-#             indexes = indexes[part_len]
-#
-#     def use(self, partition):
-#         return Partition(self.data, self.partitions[partition])
-
 
 class Net(nn.Module):
 
@@ -91,33 +54,12 @@ class Net(nn.Module):
         return F.log_softmax(x, dim=0)
 
 
-# def partition_dataset():
-#     """ Partitioning MNIST"""
-#     dataset = datasets.MNIST(
-#         '../MNIST_data',
-#         train=True,
-#         download=True,
-#         transform=transforms.Compose([
-#             transforms.ToTensor(),
-#             transforms.Normalize((0.1307,), (0.3081,))
-#         ])
-#     )
-#     size = dist.get_world_size()
-#     batch_size = 1.0 * 128 / size
-#     partition_sizes = [1.0 / size for _ in range(size)]
-#     partition = DataPartitioner(dataset, partition_sizes)
-#     partition = partition.use(dist.get_rank())
-#     train_set = torch.utils.data.DataLoader(
-#         partition, batch_size=batch_size, shuffle=True)
-#     return train_set, batch_size
-
-
 def average_gradients(model):
     """ Gradient averaging"""
     size = float(dist.get_world_size())
 
     for param in model.parameters():
-        dist.all_reduce(param.grad.data, op=dist.ReduceOp.SUM)
+        dist.all_reduce_multigpu(param.grad.data, op=dist.ReduceOp.SUM)
         param.grad.data /= size
 
 
@@ -172,8 +114,7 @@ def test(test_loader, model):
     return test_loss, float(correct) / len(test_loader.dataset)
 
 
-def run(rank, batch_size, world_size):
-    """ Distributed Synchronous SGD Example """
+def config_print(rank, batch_size, world_size):
     print('----Torch Config----')
     print('rank : {}'.format(rank))
     print('mini batch-size : {}'.format(batch_size))
@@ -181,12 +122,10 @@ def run(rank, batch_size, world_size):
     print('backend : {}'.format(args.backend))
     print('--------------------')
 
-    if args.cuda:
-        torch.cuda.manual_seed(args.seed)
-        device = torch.device('cuda')
-        # torch.cuda.set_device(args.local_rank)
-    else:
-        device = torch.device('cpu')
+
+def run(rank, batch_size, world_size):
+    """ Distributed Synchronous SGD Example """
+    config_print(rank, batch_size, world_size)
 
     train_dataset = datasets.MNIST('../MNIST_data/', train=True,
                                    transform=transforms.Compose([transforms.ToTensor(),
@@ -204,13 +143,21 @@ def run(rank, batch_size, world_size):
                                                                   transforms.Normalize((0.1307,), (0.3081,))])),
                                               batch_size=args.test_batch_size, shuffle=True, **kwargs)
 
+
     model = Net()
-    cudnn.benchmark = True
 
     if args.cuda:
+        torch.cuda.manual_seed(args.seed)
+
+        device = torch.device('cuda')
+        # torch.cuda.set_device(args.local_rank)
+        # model = nn.parallel.DistributedDataParallel(model, device_ids=[args.local_rank], output_device=args.local_rank)
+
         model.cuda(device=device)
         model = nn.parallel.DataParallel(model)
-        # model = nn.parallel.DistributedDataParallel(model, device_ids=[args.local_rank], output_device=args.local_rank)
+        cudnn.benchmark = True
+    else:
+        device = torch.device('cpu')
 
     optimizer = optim.SGD(model.parameters(), lr=args.lr, momentum=args.momentum)
 

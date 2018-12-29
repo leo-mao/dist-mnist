@@ -1,6 +1,7 @@
 import argparse
 import time
 import torch
+
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.backends.cudnn as cudnn
@@ -9,10 +10,11 @@ import torch.utils.data
 import torch.utils.data.distributed
 import torch.optim as optim
 
-from random import Random
+import torch.distributed
+
+
 from torchvision import datasets, transforms
 from torch.autograd import Variable
-from torch.multiprocessing import Process
 
 parser = argparse.ArgumentParser(description='PyTorch MNIST Example')
 parser.add_argument('--batch-size', type=int, default=256, metavar='N',
@@ -20,15 +22,16 @@ parser.add_argument('--batch-size', type=int, default=256, metavar='N',
 parser.add_argument('--test-batch-size', type=int, default=1000, metavar='N',
                     help='input batch size for testing (default: 1000)')
 parser.add_argument('--epochs', type=int, default=5, metavar='N', help='number of epochs to train (default: 10)')
+
 parser.add_argument('--lr', type=float, default=0.01, metavar='LR', help='learning rate (default: 0.01)')
 parser.add_argument('--momentum', type=float, default=0.5, metavar='M', help='SGD momentum (default: 0.5)')
 parser.add_argument('--no-cuda', action='store_true', default=False, help='disables CUDA training')
 parser.add_argument('--seed', type=int, default=1, metavar='S', help='random seed (default: 1)')
 parser.add_argument('--log-interval', type=int, default=10, metavar='N',
                     help='how many batches to wait before logging training status')
-parser.add_argument('--backend', type=str, default='nccl')
+parser.add_argument('--backend', type=str, default='gloo')
 parser.add_argument('--rank', type=int, default=0)
-parser.add_argument('--world-size', type=int, default=2)
+parser.add_argument('--world-size', type=int, default=1)
 parser.add_argument('--local_rank', type=int)
 args = parser.parse_args()
 args.cuda = not args.no_cuda and torch.cuda.is_available()
@@ -59,7 +62,7 @@ def average_gradients(model):
     size = float(dist.get_world_size())
 
     for param in model.parameters():
-        dist.all_reduce(param.grad.data, op=dist.ReduceOp.SUM)
+        dist.all_reduce_multigpu(param.grad.data, op=dist.ReduceOp.SUM)
         param.grad.data /= size
 
 
@@ -67,7 +70,7 @@ def summary_print(rank, loss, accuracy, average_epoch_time, tot_time):
     import logging
     size = float(dist.get_world_size())
     summaries = torch.tensor([loss, accuracy, average_epoch_time, tot_time], requires_grad=False, device='cuda')
-    dist.reduce(summaries, 0, op=dist.ReduceOp.SUM)
+    dist.reduce_multigpu(summaries, 0, op=dist.ReduceOp.SUM)
     if rank == 0:
         summaries /= size
         logging.critical('\n[Summary]System : Average epoch time(ex. 1.): {:.2f}s, Average total time : {:.2f}s '
@@ -147,13 +150,10 @@ def run(rank, batch_size, world_size):
 
     if args.cuda:
         torch.cuda.manual_seed(args.seed)
-
-        # device = torch.device('cuda')
-        # torch.cuda.set_device(args.local_rank)
-        model.cuda()
+        torch.cuda.set_device(args.local_rank)
+        device = torch.device('cuda', args.local_rank)
+        model.cuda(device=device)
         model = nn.parallel.DistributedDataParallel(model, device_ids=[args.local_rank], output_device=args.local_rank)
-
-        # model.cuda(device=device)
         cudnn.benchmark = True
     else:
         device = torch.device('cpu')
@@ -190,10 +190,12 @@ def run(rank, batch_size, world_size):
 
 def init_processes(rank, world_size, fn, batch_size, backend='gloo'):
     import os
-    os.environ['MASTER_ADDR'] = '10.0.0.176'
+    os.environ['MASTER_ADDR'] = '10.0.3.29'
     os.environ['MASTER_PORT'] = '9901'
     os.environ['CUDA_VISIBLE_DEVICES'] = '0,1'
-    dist.init_process_group(backend=backend, world_size=world_size, rank=rank)
+    os.environ['NCCL_DEBUG'] = 'INFO'
+    os.environ['GLOO_SOCKET_IFNAME'] = 'enp0s31f6'
+    dist.init_process_group(backend=backend, world_size=world_size, rank=rank, init_method="env://")
     fn(rank, batch_size, world_size)
 
 

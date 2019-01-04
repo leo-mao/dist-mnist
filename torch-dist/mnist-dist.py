@@ -29,7 +29,7 @@ parser.add_argument('--no-cuda', action='store_true', default=False, help='disab
 parser.add_argument('--seed', type=int, default=1, metavar='S', help='random seed (default: 1)')
 parser.add_argument('--log-interval', type=int, default=10, metavar='N',
                     help='how many batches to wait before logging training status')
-parser.add_argument('--backend', type=str, default='gloo')
+parser.add_argument('--backend', type=str, default='nccl')
 parser.add_argument('--rank', type=int, default=0)
 parser.add_argument('--world-size', type=int, default=1)
 parser.add_argument('--local_rank', type=int)
@@ -190,18 +190,16 @@ def run(rank, batch_size, world_size):
 
 def init_processes(rank, world_size, fn, batch_size, backend='gloo'):
     import os
-    os.environ['MASTER_ADDR'] = '10.0.3.29'
-    os.environ['MASTER_PORT'] = '9901'
+
     os.environ['CUDA_VISIBLE_DEVICES'] = '0,1'
     os.environ['NCCL_DEBUG'] = 'INFO'
     os.environ['GLOO_SOCKET_IFNAME'] = 'enp0s31f6'
-    dist.init_process_group(backend=backend, world_size=world_size, rank=rank, init_method="env://")
+    dist.init_process_group(backend=backend, init_method="env://")
     fn(rank, batch_size, world_size)
 
 
 if __name__ == '__main__':
     init_processes(args.rank, args.world_size, run, args.batch_size, backend=args.backend)
-    # torch.multiprocessing.set_start_method('spawn')
     # processes = []
     # for rank in range(1):
     #     p = Process(target=init_processes,
